@@ -1,10 +1,11 @@
+from copy import error
 import numpy as np
 import os, imageio
 from pathlib import Path
 from colmapUtils.read_write_model import *
 from colmapUtils.read_write_dense import *
 import json
-
+from PIL import Image
 
 ########## Slightly modified version of LLFF data loading code 
 ##########  see https://github.com/Fyusion/LLFF for original
@@ -65,7 +66,7 @@ def _minify(basedir, factors=[], resolutions=[]):
         
 def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     
-    poses_arr = np.load(os.path.join(basedir, 'poses_bounds.npy'))
+    poses_arr = np.load(os.path.join(basedir, 'poses_bounds_gt.npy'))
     poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1,2,0]) # 3 x 5 x N
     bds = poses_arr[:, -2:].transpose([1,0])
     
@@ -111,7 +112,8 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     
     def imread(f):
         if f.endswith('png'):
-            return imageio.imread(f, ignoregamma=True)
+            # return imageio.imread(f, ignoregamma=True)
+            return imageio.imread(f)
         else:
             return imageio.imread(f)
         
@@ -263,6 +265,7 @@ def load_llff_data(basedir, factor=8, recenter=True, bd_factor=.75, spherify=Fal
     # Rescale if bd_factor is provided
     sc = 1. if bd_factor is None else 1./(bds.min() * bd_factor)
     poses[:,:3,3] *= sc
+    # print("what is rescaled:", poses[:,:3,3])
     bds *= sc
     
     # print('before recenter:\n', poses[0])
@@ -384,6 +387,80 @@ def load_colmap_depth(basedir, factor=8, bd_factor=.75):
     # json.dump(data_list, open(data_file, "w"))
     np.save(data_file, data_list)
     return data_list
+
+def sample_depth(img, sc, factor, N_samples=500):
+    ERR = 0.01
+
+    H, W = img.shape
+    sampled_depth = []
+    index = []
+    coord = []
+    error = []
+    while len(sampled_depth) < N_samples:
+        idx = np.random.randint(0, H * W)
+        row = idx // W
+        col = idx % W
+        depth = img[row, col]
+        if depth==0 or idx in index:
+            continue
+        sampled_depth.append(depth * sc)
+        index.append(idx)
+        coord.append([col / factor, row / factor])
+        error.append(ERR)
+
+    return sampled_depth, coord, error
+
+def sample_all_depth(img, sc, factor):
+    ERR = 0.01
+
+    H, W = img.shape
+    sampled_depth = []
+    coord = []
+    error = []
+    for i in range(H):
+        for j in range(W):
+            depth = img[i, j]
+            if depth==0:
+                continue
+            sampled_depth.append(depth * sc)
+            # see img as matrix i is row j is col, see img as coordinate i is y j is x
+            coord.append([j / factor, i / factor])
+            error.append(ERR)
+    print(len(sampled_depth))
+
+    return sampled_depth, coord, error
+
+def make_depths(scene, seq, depthdir, basedir, factor=2, bd_factor=.75, loadfromfile=False):
+    filepath = os.path.join(basedir, 'gt_all_depth_bd{}.npy'.format(bd_factor))
+    if loadfromfile == True and os.path.exists(filepath):
+        print('load depth from file...')
+        depth_gts = np.load(filepath, allow_pickle=True)
+    else:
+        print('collect depth from database...')
+        imgdir = os.path.join(basedir, 'images')
+        filename_list = sorted(os.listdir(imgdir))
+
+        _, bds_raw, _ = _load_data(basedir, factor=factor) # factor=8 downsamples original imgs by 8x
+        bds_raw = np.moveaxis(bds_raw, -1, 0).astype(np.float32)
+        # print(bds_raw.shape)
+        # Rescale if bd_factor is provided
+        sc = 1. if bd_factor is None else 1./(bds_raw.min() * bd_factor)
+
+        depth_gts = []
+        for i in filename_list:
+            depthname = i.replace('color.png', 'depth.png')
+            depthpath = os.path.join(depthdir, scene, seq, depthname)
+            depth = Image.open(depthpath)
+            depth = np.array(depth)
+            depth[depth==65535] = 0
+            depth = depth.astype(np.float32)*0.001
+            # print(depth.shape)
+            depth, coord, error = sample_all_depth(depth, sc, factor)
+            depth_gts.append({"depth":np.array(depth), "coord":np.array(coord), "error":np.array(error)})
+
+        np.save(os.path.join(basedir, 'gt_all_depth_bd{}.npy'.format(bd_factor)), depth_gts)
+
+    return depth_gts
 
 def load_sensor_depth(basedir, factor=8, bd_factor=.75):
     data_file = Path(basedir) / 'colmap_depth.npy'

@@ -30,7 +30,7 @@ import cv2
 # concate_time, iter_time, split_time, loss_time, backward_time = [], [], [], [], []
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
 # torch.cuda.set_device(2)
 np.random.seed(0)
 DEBUG = False
@@ -63,7 +63,7 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
     return outputs
 
 
-def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
+def batchify_rays(rays_flat, chunk=1024*8, **kwargs): # chunk == 1024*32 by default
     """Render rays in smaller minibatches to avoid OOM.
     """
     all_ret = {}
@@ -78,7 +78,7 @@ def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
     return all_ret
 
 
-def render(H, W, focal, chunk=1024*32, rays=None, c2w=None, ndc=True,
+def render(H, W, focal, chunk=1024*8, rays=None, c2w=None, ndc=True,
                   near=0., far=1.,
                   use_viewdirs=False, c2w_staticcam=None, depths=None,
                   **kwargs):
@@ -184,11 +184,11 @@ def render_path(render_poses, hwf, chunk, render_kwargs, gt_imgs=None, savedir=N
             imageio.imwrite(filename, rgb8)
             depth = depth.cpu().numpy()
             print("max:", np.nanmax(depth))
-            # depth = depth / 5 * 255
-            # depth_color = cv2.applyColorMap(depth.astype(np.uint8), cv2.COLORMAP_JET)[:,:,::-1]
-            # depth_color[np.isnan(depth_color)] = 0
-            # imageio.imwrite(os.path.join(savedir, '{:03d}_depth.png'.format(i)), depth_color)
-            imageio.imwrite(os.path.join(savedir, '{:03d}_depth.png'.format(i)), depth)
+            depth = depth / 5 * 255
+            depth_color = cv2.applyColorMap(depth.astype(np.uint8), cv2.COLORMAP_JET)[:,:,::-1]
+            depth_color[np.isnan(depth_color)] = 0
+            imageio.imwrite(os.path.join(savedir, '{:03d}_depth.png'.format(i)), depth_color)
+            # imageio.imwrite(os.path.join(savedir, '{:03d}_depth.png'.format(i)), depth)
             np.savez(os.path.join(savedir, '{:03d}.npz'.format(i)), rgb=rgb.cpu().numpy(), disp=disp.cpu().numpy(), acc=acc.cpu().numpy(), depth=depth)
 
 
@@ -498,7 +498,7 @@ def config_parser():
                         help='learning rate')
     parser.add_argument("--lrate_decay", type=int, default=250, 
                         help='exponential learning rate decay (in 1000 steps)')
-    parser.add_argument("--chunk", type=int, default=1024*32, 
+    parser.add_argument("--chunk", type=int, default=1024*8, 
                         help='number of rays processed in parallel, decrease if running out of memory')
     parser.add_argument("--netchunk", type=int, default=1024*64, 
                         help='number of pts sent through network in parallel, decrease if running out of memory')
@@ -875,6 +875,7 @@ def train():
     # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
     
     start = start + 1
+    # print(start, N_iters)
     for i in trange(start, N_iters):
         time0 = time.time()
 
@@ -1072,12 +1073,14 @@ def train():
             os.makedirs(testsavedir, exist_ok=True)
             print('test poses shape', poses[i_test].shape)
             with torch.no_grad():
-                rgbs, disps = render_path(torch.Tensor(poses[i_test]).to(device), hwf, args.chunk, render_kwargs_test, gt_imgs=images[i_test], savedir=testsavedir)
+                # rgbs, disps = render_path(torch.Tensor(poses[i_test]).to('cpu'), hwf, args.chunk, render_kwargs_test, gt_imgs=images[i_test].to('cpu'), savedir=testsavedir)
+                
+                rgbs, disps = render_path(torch.Tensor(poses[i_test].to('cpu')).to(device), hwf, args.chunk, render_kwargs_test, gt_imgs=images[i_test], savedir=testsavedir)
             print('Saved test set')
 
             filenames = [os.path.join(testsavedir, '{:03d}.png'.format(k)) for k in range(len(i_test))]
 
-            test_loss = img2mse(torch.Tensor(rgbs), images[i_test])
+            test_loss = img2mse(torch.Tensor(rgbs).to(device), images[i_test])
             test_psnr = mse2psnr(test_loss)
 
     
