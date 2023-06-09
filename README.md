@@ -1,3 +1,5 @@
+Forked from https://github.com/dunbar12138/DSNeRF
+
 # Depth-supervised NeRF: Fewer Views and Faster Training for Free
 
 [**Project**](https://www.cs.cmu.edu/~dsnerf/) | [**Paper**](https://arxiv.org/abs/2107.02791) | [**YouTube**](https://youtu.be/84LFxCo7ogk)
