@@ -388,7 +388,7 @@ def load_colmap_depth(basedir, factor=8, bd_factor=.75):
     np.save(data_file, data_list)
     return data_list
 
-def sample_depth(img, sc, factor, N_samples=500):
+def sample_depth(img, sc, factor, N_samples=5000):
     ERR = 0.01
 
     H, W = img.shape
@@ -461,6 +461,164 @@ def make_depths(scene, seq, depthdir, basedir, factor=2, bd_factor=.75, loadfrom
         np.save(os.path.join(basedir, 'gt_all_depth_bd{}.npy'.format(bd_factor)), depth_gts)
 
     return depth_gts
+
+def load_7Scenes_data(args):
+
+    h = args.h # 480
+    w = args.w # 640
+    f = args.f # 585.
+    hwf = np.array([h,w,f]).reshape([3,1])
+
+    # decide path to load data
+    data_dir = os.path.join(args.dbdir, args.scene)
+    train_split = os.path.join(data_dir, 'TrainSplit.txt')
+    test_split = os.path.join(data_dir, 'TestSplit.txt')
+    with open(train_split, 'r') as f:
+        train_seqs = [int(l.split('sequence')[-1]) for l in f if not l.startswith('#')]
+    with open(test_split, 'r') as f:
+        test_seqs = [int(l.split('sequence')[-1]) for l in f if not l.startswith('#')]
+    
+
+    # collect poses, color images and depth images for train set
+    pose_list = []
+    train_imgs = []
+    bd_list = []
+    depthfilepath = os.path.join(args.datadir, 'gt_depth_train.npy')
+    if args.loaddepth == True and os.path.exists(depthfilepath):
+        print('load depth from file...')
+        depth_gts = np.load(depthfilepath, allow_pickle=True)
+    else:
+        print('collect depth from database...')
+        depth_gts = []
+    for seq in train_seqs:
+        seq_data_dir = os.path.join(data_dir, 'seq-{:02d}'.format(seq))
+
+        p_filenames = [n for n in os.listdir(seq_data_dir) if n.find('pose') >= 0]
+        idxes = [int(n[6:12]) for n in p_filenames]
+        frame_idx = np.array(sorted(idxes))
+
+        if args.trainskip > 1:
+            frame_idx_tmp = frame_idx[::args.trainskip]
+            frame_idx = frame_idx_tmp
+
+        # load pose
+        for i in frame_idx:
+            posepath = os.path.join(seq_data_dir, 'frame-{:06d}.pose.txt'.format(i))
+            pose = np.loadtxt(posepath)
+            pose_list.append(pose)
+            bd_list.append([0.4, 2.5])
+
+        # load color images
+        c_imgs = [imageio.imread(os.path.join(seq_data_dir, 'frame-{:06d}.color.png'.format(i)))[...,:3]/255. for i in frame_idx]
+        train_imgs.extend(c_imgs)
+
+        # load depth images
+        if args.loaddepth == False:
+            for i in frame_idx:
+                depthpath = os.path.join(seq_data_dir, 'frame-{:06d}.depth.png'.format(i))
+                d_img = Image.open(depthpath)
+                d_img = np.array(d_img)
+                d_img[d_img==65535] = 0
+                d_img = d_img.astype(np.float32)*0.001
+                # get near far original method is to get 0.5% and 99.5% as the near and far
+                # near = d_img[d_img > 0].min()
+                # far = d_img.max()
+                # bd_list.append([near, far])
+                # print('original near/far:', near, far)
+                # sample depths
+                depth, coord, error = sample_depth(d_img, sc=1.0, factor=1.0)
+                depth_gts.append({"depth":np.array(depth), "coord":np.array(coord), "error":np.array(error)})
+
+    # preprocess pose
+    # prepare for gt_pose_bounds.npy
+    pose_list = np.stack(pose_list, 0)
+    poses = pose_list[:, :3, :4].transpose([1,2,0])
+    poses = np.concatenate([poses, np.tile(hwf[..., np.newaxis], [1,1,poses.shape[-1]])], 1)
+    poses = np.concatenate([poses[:, 1:2, :], poses[:, 0:1, :], -poses[:, 2:3, :], poses[:, 3:4, :], poses[:, 4:5, :]], 1)
+
+    # save train pose bounds
+    poses_arr = []
+    for i in range(poses.shape[-1]):
+        poses_arr.append(np.concatenate([poses[..., i].ravel(), np.array(bd_list[i])], 0))
+
+    poses_arr = np.array(poses_arr)
+    np.save(os.path.join(args.datadir, 'gt_poses_bounds_train.npy'), poses_arr)
+
+    # save sampled depths
+    if args.loaddepth == True:
+        pass
+    else:
+        np.save(os.path.join(args.datadir, 'gt_depth_train.npy'), depth_gts)
+
+    # load pose, images as the required data format in _load_data()
+    # omit rescale by factor
+    train_poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1,2,0]) # 3 x 5 x N
+    bds = poses_arr[:, -2:].transpose([1,0])
+    train_imgs = np.stack(train_imgs, -1)
+
+    # load pose, images as the required data format in load_llff_data()
+    # omit rescale by bd_factor
+    train_poses = np.concatenate([train_poses[:, 1:2, :], -train_poses[:, 0:1, :], train_poses[:, 2:, :]], 1) # [-u, r, -t] -> [r, u, -t]
+    train_poses = np.moveaxis(train_poses, -1, 0).astype(np.float32)
+    train_imgs = np.moveaxis(train_imgs, -1, 0).astype(np.float32)
+    bds = np.moveaxis(bds, -1, 0).astype(np.float32)
+
+    # collect poses, color images and depth images for test set
+    pose_list_t = []
+    test_imgs = []
+    bd_list_t = [] # near far for test set are supposed not to be obtained
+    for seq in test_seqs:
+        seq_data_dir = os.path.join(data_dir, 'seq-{:02d}'.format(seq))
+
+        p_filenames = [n for n in os.listdir(seq_data_dir) if n.find('pose') >= 0]
+        idxes = [int(n[6:12]) for n in p_filenames]
+        frame_idx = np.array(sorted(idxes))
+
+        if args.testskip > 1:
+            frame_idx_tmp = frame_idx[::args.testskip]
+            frame_idx = frame_idx_tmp
+
+        # load pose
+        for i in frame_idx:
+            posepath = os.path.join(seq_data_dir, 'frame-{:06d}.pose.txt'.format(i))
+            pose = np.loadtxt(posepath)
+            pose_list_t.append(pose)
+            bd_list_t.append([0.4, 2.5])
+
+        # load color images
+        c_imgs_t = [imageio.imread(os.path.join(seq_data_dir, 'frame-{:06d}.color.png'.format(i)))[...,:3]/255. for i in frame_idx]
+        test_imgs.extend(c_imgs_t)
+
+    # preprocess pose
+    # prepare for gt_pose_bounds.npy
+    pose_list_t = np.stack(pose_list_t, 0)
+    poses_t = pose_list_t[:, :3, :4].transpose([1,2,0])
+    poses_t = np.concatenate([poses_t, np.tile(hwf[..., np.newaxis], [1,1,poses_t.shape[-1]])], 1)
+    poses_t = np.concatenate([poses_t[:, 1:2, :], poses_t[:, 0:1, :], -poses_t[:, 2:3, :], poses_t[:, 3:4, :], poses_t[:, 4:5, :]], 1)
+
+    # save test pose bounds
+    poses_arr_t = []
+    for i in range(poses_t.shape[-1]):
+        poses_arr_t.append(np.concatenate([poses_t[..., i].ravel(), np.array(bd_list_t[i])], 0))
+
+    poses_arr_t = np.array(poses_arr_t)
+    np.save(os.path.join(args.datadir, 'gt_poses_bounds_test.npy'), poses_arr_t)
+
+    # load pose, images as the required data format in _load_data()
+    # omit rescale by factor
+    test_poses = poses_arr_t[:, :-2].reshape([-1, 3, 5]).transpose([1,2,0]) # 3 x 5 x N
+    test_imgs = np.stack(test_imgs, -1)
+    
+    # load pose, images as the required data format in load_llff_data()
+    # omit rescale by bd_factor
+    test_poses = np.concatenate([test_poses[:, 1:2, :], -test_poses[:, 0:1, :], test_poses[:, 2:, :]], 1) # [-u, r, -t] -> [r, u, -t]
+    test_poses = np.moveaxis(test_poses, -1, 0).astype(np.float32)
+    test_imgs = np.moveaxis(test_imgs, -1, 0).astype(np.float32)
+
+    # set render poses
+    render_poses = test_poses
+
+    return train_imgs, test_imgs, train_poses, test_poses, render_poses, depth_gts, bds
 
 def load_sensor_depth(basedir, factor=8, bd_factor=.75):
     data_file = Path(basedir) / 'colmap_depth.npy'
