@@ -1,7 +1,7 @@
-expname = heads3_gt_dense1
+expname = heads4_gt_sparse_test
 basedir = ./logs/test
-datadir = ./data/heads3
-dataset_type = llff
+datadir = ./data/heads4
+dataset_type = 7Scenes
 factor = 1
 llffhold = 0
 N_rand = 2048
@@ -17,4 +17,4 @@ i_weights = 5000
 i_testset = 5000
 i_video = 50000
 N_iters = 50000
-loaddepth = False
+loaddepth = True

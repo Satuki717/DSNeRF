@@ -43,6 +43,116 @@ def load_initial_pose(retrieval_list_path,database_dir):
 
     return retrieval_list, coarse_pose_list
 
+# create NeRF renderer
+def create_nerf(args):
+    """Instantiate NeRF's MLP model.
+    """
+    embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
+
+    input_ch_views = 0
+    embeddirs_fn = None
+    if args.use_viewdirs:
+        embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
+    output_ch = 5 if args.N_importance > 0 else 4
+    skips = [4]
+    if args.alpha_model_path is None:
+        model = NeRF(D=args.netdepth, W=args.netwidth,
+                    input_ch=input_ch, output_ch=output_ch, skips=skips,
+                    input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+        grad_vars = list(model.parameters())
+    else:
+        alpha_model = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
+                            input_ch=input_ch, output_ch=output_ch, skips=skips,
+                            input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+        print('Alpha model reloading from', args.alpha_model_path)
+        ckpt = torch.load(args.alpha_model_path)
+        alpha_model.load_state_dict(ckpt['network_fine_state_dict'])
+        if not args.no_coarse:
+            model = NeRF_RGB(D=args.netdepth, W=args.netwidth,
+                        input_ch=input_ch, output_ch=output_ch, skips=skips,
+                        input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs, alpha_model=alpha_model).to(device)
+            grad_vars = list(model.parameters())
+        else:
+            model = None
+            grad_vars = []
+    
+
+    model_fine = None
+    if args.N_importance > 0:
+        if args.alpha_model_path is None:
+            model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
+                            input_ch=input_ch, output_ch=output_ch, skips=skips,
+                            input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+        else:
+            model_fine = NeRF_RGB(D=args.netdepth_fine, W=args.netwidth_fine,
+                            input_ch=input_ch, output_ch=output_ch, skips=skips,
+                            input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs, alpha_model=alpha_model).to(device)
+        grad_vars += list(model_fine.parameters())
+
+    network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn,
+                                                                embed_fn=embed_fn,
+                                                                embeddirs_fn=embeddirs_fn,
+                                                                netchunk=args.netchunk)
+
+    start = 0
+    basedir = args.basedir
+    expname = args.expname
+
+    ##########################
+
+    # Load checkpoints
+    if args.ft_path is not None and args.ft_path!='None':
+        ckpts = [args.ft_path]
+    else:
+        ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if 'tar' in f]
+
+    print('Found ckpts', ckpts)
+    if len(ckpts) > 0 and not args.no_reload:
+        ckpt_path = ckpts[-1]
+        print('Reloading from', ckpt_path)
+        ckpt = torch.load(ckpt_path)
+
+        start = ckpt['global_step']
+
+        # Load model
+        model.load_state_dict(ckpt['network_fn_state_dict'])
+        if model_fine is not None:
+            model_fine.load_state_dict(ckpt['network_fine_state_dict'])
+
+    ##########################
+
+    render_kwargs_train = {
+        'network_query_fn' : network_query_fn,
+        'perturb' : args.perturb,
+        'N_importance' : args.N_importance,
+        'network_fine' : model_fine,
+        'N_samples' : args.N_samples,
+        'network_fn' : model,
+        'use_viewdirs' : args.use_viewdirs,
+        'white_bkgd' : args.white_bkgd,
+        'raw_noise_std' : args.raw_noise_std,
+    }
+
+    # NDC only good for LLFF-style forward facing data
+    if args.dataset_type != 'llff' or args.no_ndc:
+        print('Not ndc!')
+        render_kwargs_train['ndc'] = False
+        render_kwargs_train['lindisp'] = args.lindisp
+    else:
+        render_kwargs_train['ndc'] = True
+
+    render_kwargs_test = {k : render_kwargs_train[k] for k in render_kwargs_train}
+    render_kwargs_test['perturb'] = False
+    render_kwargs_test['raw_noise_std'] = 0.
+
+    if args.sigma_loss:
+        render_kwargs_train['sigma_loss'] = SigmaLoss(args.N_samples, args.perturb, args.raw_noise_std)
+
+    ##########################
+
+
+    return render_kwargs_train, render_kwargs_test, start, grad_vars
+
 # argument parse
 def config_parser():
 
@@ -54,7 +164,7 @@ def config_parser():
                         help='experiment name')
     parser.add_argument("--basedir", type=str, default='./logs/', 
                         help='where to store ckpts and logs')
-    parser.add_argument("--database_path", type=str, default='/home/kai/data/yyuan/7scenes', 
+    parser.add_argument("--database_path", type=str, default='/mnt/datagrid1/yyuan/7scenes', 
                         help='image database directory')
     parser.add_argument("--retrieve_list_path", type=str, default='/datasw/code/Camera_localization_diff_render_refine/inference_coarse_results/retrieval_coarse_estimation/retrieval_list.txt', 
                         help='input initial coarse pose file directory')
@@ -107,10 +217,10 @@ def config_parser():
     # deepvoxels flags
 
     # dataset options
-    parser.add_argument("--dataset_type", type=str, default='llff', 
+    parser.add_argument("--dataset_type", type=str, default='7Scenes', 
                         help='options: llff / blender / deepvoxels')
-    parser.add_argument("--testskip", type=int, default=8, 
-                        help='will load 1/N images from test/val sets, useful for large datasets like deepvoxels')
+    # parser.add_argument("--testskip", type=int, default=8, 
+    #                     help='will load 1/N images from test/val sets, useful for large datasets like deepvoxels')
     
     # blender flags
     parser.add_argument("--white_bkgd", action='store_true', 

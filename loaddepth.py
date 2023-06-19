@@ -7,6 +7,10 @@ basedir = '/mnt/datagrid1/yyuan/7scenes/heads/seq-02'
 outdir = 'data/heads3'
 
 def render_depth(basedir, outdir):
+    '''render normalized depth map from original depth map
+    basedir: database path
+    outdir: output path
+    '''
     imgdir = os.path.join(outdir, 'images')
     filename_list = sorted(os.listdir(imgdir))
 

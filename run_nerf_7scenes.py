@@ -14,24 +14,17 @@ import matplotlib.pyplot as plt
 
 from run_nerf_helpers import *
 
-from load_llff import load_llff_data, load_colmap_depth, load_colmap_llff, make_depths
-from load_dtu import load_dtu_data
+from load_llff import load_llff_data, load_colmap_depth, load_colmap_llff, make_depths, load_7Scenes_data
 
 from loss import SigmaLoss
-
 
 from data import RayDataset
 from torch.utils.data import DataLoader
 
 from utils.generate_renderpath import generate_renderpath
 import cv2
-# import time
-
-# concate_time, iter_time, split_time, loss_time, backward_time = [], [], [], [], []
-
 
 device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
-# torch.cuda.set_device(2)
 np.random.seed(0)
 DEBUG = False
 
@@ -553,8 +546,8 @@ def config_parser():
     # dataset options
     parser.add_argument("--dataset_type", type=str, default='llff', 
                         help='options: llff / blender / deepvoxels')
-    parser.add_argument("--testskip", type=int, default=8, 
-                        help='will load 1/N images from test/val sets, useful for large datasets like deepvoxels')
+    # parser.add_argument("--testskip", type=int, default=8, 
+    #                     help='will load 1/N images from test/val sets, useful for large datasets like deepvoxels')
 
     ## deepvoxels flags
     parser.add_argument("--shape", type=str, default='greek', 
@@ -627,9 +620,24 @@ def config_parser():
     parser.add_argument("--depth_rays_prop", type=float, default=0.5,
                         help="Proportion of depth rays.")
 
-    # new settings
+    # new settings for 7scenes
     parser.add_argument("--loaddepth", action='store_true',
                         help="decide whether load depth from file or collect directly")
+    parser.add_argument("--h", type=int, default=480, 
+                        help="set image height in load 7scenes")
+    parser.add_argument("--w", type=int, default=640, 
+                        help="set image width in load 7scenes")
+    parser.add_argument("--f", type=float, default=585., 
+                        help="set focal length in load 7scenes")
+    parser.add_argument("--dbdir", type=str, default='/mnt/datagrid1/yyuan/7scenes', 
+                        help="set dataset path")
+    parser.add_argument("--scene", type=str, default='heads', 
+                        help="set scene to train or test")
+    parser.add_argument("--trainskip", type=int, default=5, 
+                        help="set the image sampling interval for training")
+    parser.add_argument("--testskip", type=int, default=10, 
+                        help="set the image sampling interval for testing")
+    
     return parser
 
 
@@ -698,6 +706,28 @@ def train():
             near = 0.
             far = 1.
         print('NEAR FAR', near, far)
+    elif args.dataset_type == '7Scenes':
+        train_imgs, test_imgs, train_poses, test_poses, render_poses, depth_gts, bds = load_7Scenes_data(args)
+        poses = np.concatenate([train_poses, test_poses], axis=0)
+        images = np.concatenate([train_imgs, test_imgs], axis=0)
+        hwf = train_poses[0, :3, -1]
+        train_poses = train_poses[:, :3, :4]
+        test_poses = test_poses[:, :3, :4]
+        poses = poses[:, :3, :4]
+        print('Loaded 7Scenes data', args.scene, images.shape, poses.shape, depth_gts.shape, render_poses.shape, hwf, args.datadir)
+        i_train = list(range(train_poses.shape[0]))
+        i_test = list(range(train_poses.shape[0], poses.shape[0]))
+        i_val = i_test
+        print('DEFINING BOUNDS')
+        if args.no_ndc:
+            near = np.ndarray.min(bds) * .9
+            far = np.ndarray.max(bds) * 1.
+            
+        else:
+            near = 0.
+            far = 1.
+        print('NEAR FAR', near, far)
+
     else:
         print('Unknown dataset type', args.dataset_type, 'exiting')
         return
@@ -1021,10 +1051,10 @@ def train():
             
             if args.depth_loss:
                 tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()} Depth loss: {depth_loss.item()} PSNR: {psnr.item()}")
-                training_data.append([i, loss.cpu().detach().numpy(), depth_loss.cpu().detach().numpy(), psnr.cpu().detach().numpy()])
+                training_data.append([i, loss.detach().numpy(), depth_loss.detach().numpy(), psnr.detach().numpy()])
             else:
                 tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()} PSNR: {psnr.item()}")
-                training_data.append([i, loss.cpu().detach().numpy(), psnr.cpu().detach().numpy()])
+                training_data.append([i, loss.detach().numpy(), psnr.detach().numpy()])
 
         global_step += 1
     # training_data = np.array(training_data)
