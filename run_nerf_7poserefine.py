@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
+import pickle
 
 import matplotlib.pyplot as plt
 
@@ -456,10 +457,16 @@ def render_rays(ray_batch,
 
 
 # define functions
-def load_initial_pose(retrieval_list_path,database_dir):
-    retrieval_list = np.loadtxt(retrieval_list_path, dtype=str, comments=['chess', 'fire', 'office', 'pumpkin', 'redkitchen', 'stairs'], usecols=(0,1))
+def load_initial_pose(retrieval_list_path, database_dir, scene='heads'):
+    comment_list = ['chess', 'fire', 'heads', 'office', 'pumpkin', 'redkitchen', 'stairs']
+    comment_list.remove(scene)
+    retrieval_list = np.loadtxt(retrieval_list_path, dtype=str, comments=comment_list, usecols=(0,1))
     # print(retrieval_list[:5]) # N * 2
 
+    pred_pose_path = retrieval_list_path.replace('retrieval_list.txt', 'query_pose_prediction_dict.pkl')
+    with open(pred_pose_path, 'rb') as file:
+        pred_pose_dict = pickle.load(file)
+ 
     coarse_pose_list = []
     for i in range(len(retrieval_list)):
         pose_path = os.path.join(database_dir,retrieval_list[i,1]).replace('color.png','pose.txt')
@@ -474,7 +481,7 @@ def load_initial_pose(retrieval_list_path,database_dir):
         gt_pose_list.append(pose)
     gt_pose_list = np.stack(gt_pose_list, 0) # N * 4 * 4
 
-    return retrieval_list, coarse_pose_list, gt_pose_list
+    return retrieval_list, coarse_pose_list, gt_pose_list, pred_pose_dict
 
 def calRelativePose(poseMatrix1, poseMatrix2):
     """Calculate the relative pose FROM matrix1 To matrix2 using in 7scenes
@@ -694,6 +701,9 @@ def config_parser():
     parser.add_argument("--retrieve_list_path", type=str, 
                         default='/mnt/datagrid1/yyuan/dockersw/code/Camera_localization_diff_render_refine/inference_coarse_results/retrieval_coarse_estimation/retrieval_list.txt', 
                         help='input initial coarse pose file directory')
+     
+    parser.add_argument("--use_coarse_estimation", action='store_true', 
+                        help='set whether use coarse pose estimation result or database pose result')
     parser.add_argument("--refinelrate", type=float, default=2e-2)
     parser.add_argument("--refine_steps", type=int, default=200, help="Number of steps for pose optimization.")
     parser.add_argument("--refine_i_print",   type=int, default=10, 
@@ -717,7 +727,7 @@ def pose_refine():
         pass
     # load pose to be refined
     elif args.dataset_type == '7ScenesRefine':
-        retrieval_list, coarse_pose_list, gt_pose_list = load_initial_pose(args.retrieve_list_path, args.dbdir)
+        retrieval_list, coarse_pose_list, gt_pose_list, pred_pose_dict = load_initial_pose(args.retrieve_list_path, args.dbdir, args.scene)
         print('list length:', len(retrieval_list))
 
         # opencv coordinate system -> NeRF coordinate system 
@@ -772,7 +782,12 @@ def pose_refine():
         query_img_path = os.path.join(args.dbdir, retrieval_list[i,0])
         query_img = imageio.imread(query_img_path)/255.0
         query_img = query_img.astype(np.float32)
-        initial_pose = coarse_pose_list[i]
+
+        if args.use_coarse_estimation == True: # use the coarse pose estimation result from RelocNet
+            scene, seq, index = retrieval_list[i,0].split('/')
+            initial_pose = pred_pose_dict[scene][seq][index]
+        else:   # use the database pose of the nearest image
+            initial_pose = coarse_pose_list[i]
         gt_pose = gt_pose_list[i]
 
         print('currently refining image:', retrieval_list[i,0])
@@ -799,7 +814,7 @@ def pose_refine():
         predicted_poses = []
         error_list = []
         i_print_time = 0.0
-        testsavedir = os.path.join(basedir, expname, 'renderonly_refine_{:06d}'.format(i))
+        testsavedir = os.path.join(basedir, expname, 'poserefine', 'refine_{:06d}'.format(i))
         os.makedirs(testsavedir, exist_ok=True)
 
         for i_step in range(n_steps):
