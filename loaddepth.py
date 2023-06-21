@@ -49,7 +49,7 @@ def load_initial_pose1(retrieval_list_path, database_dir, scene='heads'):
         print(heads_pose_list[key].shape) # 1000*4*4
         test_pose_list.append(heads_pose_list[key])
         print(len(test_pose_list))
-        
+
     test_pose_list = np.stack(test_pose_list, 0)
     print(len(test_pose_list))
     
@@ -72,4 +72,8 @@ def load_initial_pose1(retrieval_list_path, database_dir, scene='heads'):
     return
 
 if __name__=='__main__':
-    load_initial_pose1(retrieval_list_path, database_dir)
+    # load_initial_pose1(retrieval_list_path, database_dir)
+    for x in range(640):
+        for y in range(480):
+            if 2*x*y - y**2 ==1024:
+                print(x,y)

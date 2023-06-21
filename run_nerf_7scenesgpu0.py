@@ -12,7 +12,7 @@ from tqdm import tqdm, trange
 
 import matplotlib.pyplot as plt
 
-from run_nerf_helpers import *
+from run_nerf_helpersgpu0 import *
 
 from load_llff import load_llff_data, load_colmap_depth, load_colmap_llff, make_depths, load_7Scenes_data
 
@@ -24,7 +24,7 @@ from torch.utils.data import DataLoader
 from utils.generate_renderpath import generate_renderpath
 import cv2
 
-device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
 DEBUG = False
 

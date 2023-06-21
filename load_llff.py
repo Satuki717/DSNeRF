@@ -479,12 +479,12 @@ def load_7Scenes_data(args):
         test_seqs = [int(l.split('sequence')[-1]) for l in f if not l.startswith('#')]
     
 
-    # collect poses, color images and depth images for train set
+    ### collect poses, color images and depth images for train set
     pose_list = []
     train_imgs = []
     bd_list = []
     depthfilepath = os.path.join(args.datadir, 'gt_depth_train.npy')
-    if args.loaddepth == True and os.path.exists(depthfilepath):
+    if args.loaddepth == True:
         print('load depth from file...')
         depth_gts = np.load(depthfilepath, allow_pickle=True)
     else:
@@ -513,7 +513,9 @@ def load_7Scenes_data(args):
         train_imgs.extend(c_imgs)
 
         # load depth images
-        if args.loaddepth == False:
+        if args.loaddepth == True:
+            pass
+        else:
             for i in frame_idx:
                 depthpath = os.path.join(seq_data_dir, 'frame-{:06d}.depth.png'.format(i))
                 d_img = Image.open(depthpath)
@@ -542,12 +544,14 @@ def load_7Scenes_data(args):
         poses_arr.append(np.concatenate([poses[..., i].ravel(), np.array(bd_list[i])], 0))
 
     poses_arr = np.array(poses_arr)
+    print('training pose shape', poses_arr.shape)
     np.save(os.path.join(args.datadir, 'gt_poses_bounds_train.npy'), poses_arr)
 
     # save sampled depths
     if args.loaddepth == True:
         pass
     else:
+        depth_gts = np.array(depth_gts)
         np.save(os.path.join(args.datadir, 'gt_depth_train.npy'), depth_gts)
 
     # load pose, images as the required data format in _load_data()
@@ -563,7 +567,7 @@ def load_7Scenes_data(args):
     train_imgs = np.moveaxis(train_imgs, -1, 0).astype(np.float32)
     bds = np.moveaxis(bds, -1, 0).astype(np.float32)
 
-    # collect poses, color images and depth images for test set
+    ### collect poses, color images and depth images for test set
     pose_list_t = []
     test_imgs = []
     bd_list_t = [] # near far for test set are supposed not to be obtained
@@ -602,6 +606,7 @@ def load_7Scenes_data(args):
         poses_arr_t.append(np.concatenate([poses_t[..., i].ravel(), np.array(bd_list_t[i])], 0))
 
     poses_arr_t = np.array(poses_arr_t)
+    print('test pose shape', poses_arr_t.shape)
     np.save(os.path.join(args.datadir, 'gt_poses_bounds_test.npy'), poses_arr_t)
 
     # load pose, images as the required data format in _load_data()
